@@ -59,6 +59,7 @@ local State = getgenv().AIMFUNY
 State.Aimbot = {
     Enabled = false, FOV = 120, Distance = 500, ShowFOV = false,
     Smoothness = 0.15, MouseFollow = false, TargetPart = "Head",
+    IgnoreTeammates = true, IgnoreList = {},
 }
 
 State.ESP = {
@@ -111,6 +112,41 @@ local function get_target_part(player, part_name)
 end
 
 --// ============================================================
+--// ALLY FILTER (equipos + lista manual)
+--// ============================================================
+local ignore_lower = {}
+local function rebuild_ignore_lower()
+    ignore_lower = {}
+    for name in pairs(State.Aimbot.IgnoreList) do
+        ignore_lower[string.lower(name)] = true
+    end
+end
+rebuild_ignore_lower()
+
+local function is_ally(player)
+    -- lista manual siempre gana (case-insensitive)
+    if ignore_lower[string.lower(player.Name)] then return true end
+
+    if not State.Aimbot.IgnoreTeammates then return false end
+
+    -- 1) servicio Team estandar
+    local lp_team = LocalPlayer.Team
+    local p_team  = player.Team
+    if lp_team and p_team and lp_team == p_team then
+        return true
+    end
+
+    -- 2) fallback por TeamColor SOLO si ambos estan en un equipo real (no Neutral)
+    --    en FFA todos son Neutral y TeamColor es blanco -> sin esto se bloquearia todo
+    if LocalPlayer.Neutral == false and player.Neutral == false
+       and LocalPlayer.TeamColor == player.TeamColor then
+        return true
+    end
+
+    return false
+end
+
+--// ============================================================
 --// FOV CIRCLE
 --// ============================================================
 local function update_fov()
@@ -133,6 +169,8 @@ local function get_closest_target()
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
+        if is_ally(player) then continue end
+
         local char, hum, root = get_character(player)
         if not char then continue end
 
@@ -835,6 +873,59 @@ local function add_button(sec, text, callback)
     b.MouseButton1Click:Connect(callback)
 end
 
+-- NUEVO: textbox con boton "Add" para agregar nombres a la whitelist
+local function add_textbox(sec, placeholder, callback)
+    local row = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 32),
+        BackgroundTransparency = 1,
+        LayoutOrder = nxt(),
+    }, sec)
+
+    local box = new("TextBox", {
+        Size = UDim2.new(1, -66, 1, 0),
+        BackgroundColor3 = THEME.Bg,
+        BorderSizePixel = 0,
+        Text = "",
+        PlaceholderText = placeholder or "",
+        PlaceholderColor3 = THEME.Sub,
+        TextColor3 = THEME.Text,
+        TextSize = 12,
+        Font = Enum.Font.GothamMedium,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ClearTextOnFocus = false,
+    }, row)
+    corner(box, 5)
+    stroke(box)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 8) }, box)
+
+    local btn = new("TextButton", {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.fromOffset(58, 32),
+        BackgroundColor3 = THEME.Accent,
+        BorderSizePixel = 0,
+        Text = "Add",
+        TextColor3 = Color3.fromRGB(20, 20, 20),
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        AutoButtonColor = false,
+    }, row)
+    corner(btn, 5)
+
+    local function commit()
+        local name = box.Text:gsub("^%s*(.-)%s*$", "%1")
+        if #name > 0 then
+            callback(name)
+            box.Text = ""
+        end
+    end
+
+    btn.MouseButton1Click:Connect(commit)
+    box.FocusLost:Connect(function(enterPressed)
+        if enterPressed then commit() end
+    end)
+end
+
 --// ============================================================
 --// UNLOAD / MINIMIZAR / RESTAURAR
 --// ============================================================
@@ -912,8 +1003,42 @@ add_slider(aim, "Max Distance", 50, 2000, 500, 0, function(v) State.Aimbot.Dista
 add_toggle(aim, "Show FOV Circle", false, function(v) State.Aimbot.ShowFOV = v end)
 add_slider(aim, "Smoothness", 0.01, 1, 0.15, 2, function(v) State.Aimbot.Smoothness = v end)
 add_toggle(aim, "Mouse Follow", false, function(v) State.Aimbot.MouseFollow = v end)
+add_toggle(aim, "Ignore Teammates", true, function(v) State.Aimbot.IgnoreTeammates = v end)
 add_dropdown(aim, "Target Part", { "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso" }, 1,
     function(v) State.Aimbot.TargetPart = v end)
+
+-- NUEVO: Ally Whitelist (nombres a ignorar manualmente, por si el juego no usa el Team service)
+local wl = add_section(aim_page, "Ally Whitelist")
+local wl_hint = text_label(wl, "Nombres a ignorar por el aimbot", 11, THEME.Sub)
+wl_hint.Size = UDim2.new(1, 0, 0, 14)
+wl_hint.LayoutOrder = nxt()
+
+local wl_display
+local function refresh_wl_display()
+    if not wl_display then return end
+    local names = {}
+    for name in pairs(State.Aimbot.IgnoreList) do table.insert(names, name) end
+    table.sort(names)
+    wl_display.Text = (#names == 0) and "Lista vacia" or table.concat(names, ", ")
+end
+
+add_textbox(wl, "Escribe un nombre y Enter", function(name)
+    State.Aimbot.IgnoreList[name] = true
+    rebuild_ignore_lower()
+    refresh_wl_display()
+end)
+
+wl_display = text_label(wl, "Lista vacia", 12, THEME.Sub)
+wl_display.Size = UDim2.new(1, 0, 0, 0)
+wl_display.AutomaticSize = Enum.AutomaticSize.Y
+wl_display.TextWrapped = true
+wl_display.LayoutOrder = nxt()
+
+add_button(wl, "Limpiar lista", function()
+    State.Aimbot.IgnoreList = {}
+    rebuild_ignore_lower()
+    refresh_wl_display()
+end)
 
 -- Visuals
 local esp = add_section(vis_page, "ESP functions")
